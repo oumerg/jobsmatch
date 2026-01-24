@@ -1,0 +1,63 @@
+job-matching-bot/
+│
+├── .env                      # BOT_TOKEN, MONGODB_URI, etc. (never commit!)
+├── .gitignore
+├── requirements.txt          # or poetry.lock / Pipfile
+├── README.md
+├── run.py                    # or main.py – the entry point
+│
+├── config/                   # All configuration & secrets loading
+│   ├── __init__.py
+│   ├── settings.py           # loads .env + defaults
+│   └── constants.py          # job keywords, status enums, etc.
+│
+├── bot/                      # Core Telegram bot logic
+│   ├── __init__.py
+│   ├── application.py        # Builds & configures Application (handlers, jobs, middleware)
+│   └── dispatcher.py         # Optional: if you want to split handler registration
+│
+├── handlers/                 # All message/command callback handlers
+│   ├── __init__.py
+│   ├── start.py              # /start, welcome, help
+│   ├── user_query.py         # Handles user job search messages ("python developer remote")
+│   ├── admin.py              # Admin commands (/stats, /addgroup, etc.)
+│   └── error.py              # Global error handler
+│
+├── scanners/                 # Logic for scanning groups/channels
+│   ├── __init__.py
+│   ├── message_scanner.py    # The main message handler for groups/channels
+│   └── job_detector.py       # is_job_posting(text) → bool
+│
+├── parsers/                  # Turns raw message text → structured job dict
+│   ├── __init__.py
+│   ├── rule_based.py         # regex + keyword patterns
+│   ├── nlp_parser.py         # spaCy / transformers based (optional advanced)
+│   └── utils.py              # cleaning, salary extraction, etc.
+│
+├── database/                 # Database layer (abstraction)
+│   ├── __init__.py
+│   ├── models.py             # Pydantic / dataclass job & user models
+│   ├── mongodb.py            # MongoDB repo / queries
+│   ├── sqlite.py             # SQLite repo / queries (alternative)
+│   └── repository.py         # Abstract repo → choose mongo or sqlite
+│
+├── services/                 # Business logic (non-Telegram specific)
+│   ├── __init__.py
+│   ├── job_service.py        # save_job(), find_matching_jobs(query), etc.
+│   ├── match_service.py      # fuzzy matching, scoring, keyword + NLP
+│   └── notification_service.py  # (future) send daily/ instant matches
+│
+├── utils/                    # Helper functions & tools
+│   ├── __init__.py
+│   ├── logging.py
+│   ├── text_cleaner.py
+│   └── keyboards.py          # reply & inline keyboard builders
+│
+├── data/                     # Local files (optional)
+│   ├── stop_words.txt
+│   └── sample_jobs/          # for testing parsers
+│
+└── tests/                    # unit & integration tests (very recommended)
+    ├── test_parsers.py
+    ├── test_matching.py
+    └── ...

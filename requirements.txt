@@ -1,0 +1,17 @@
+python-telegram-bot
+pymongo
+asyncpg
+python-dotenv
+pydantic
+spacy
+nltk
+fuzzywuzzy
+python-levenshtein
+regex
+pytest
+pytest-asyncio
+psycopg2-binary
+aiosqlite
+telethon
+aiohttp
+google-generativeai
