@@ -42,20 +42,44 @@ class JobTypesManager:
             'internship': '🎓 Internship'
         }
     
-    def get_job_types_keyboard(self):
+    
+    def get_job_types_keyboard(self, selected_types: list = None):
         """Generate inline keyboard for job types"""
+        if selected_types is None:
+            selected_types = []
+            
         keyboard = []
+        
+        # Add "All Job Types" options
+        all_selected = len(selected_types) == len(self.job_types_display)
+        all_text = "✅ All Job Types" if all_selected else "All Job Types"
+        keyboard.append([InlineKeyboardButton(all_text, callback_data="jobtype_all")])
         
         # Create rows with 2 job types each
         job_type_items = list(self.job_types_display.items())
         for i in range(0, len(job_type_items), 2):
             row = []
             for key, display in job_type_items[i:i+2]:
-                # Use bullet point for consistency
+                is_selected = key in selected_types
+                
+                # Get clean display name
                 clean_display = display.replace("💼 ", "").replace("⏰ ", "").replace("🏠 ", "").replace("🤝 ", "").replace("🎓 ", "")
-                row.append(InlineKeyboardButton(f"• {clean_display}", callback_data=f"jobtype_{key}"))
+                
+                # Format with checkmark or bullet
+                if is_selected:
+                    row_text = f"✅ {clean_display}"
+                else:
+                    # Get icon if possible
+                    icon = display.split(" ")[0] if " " in display else ""
+                    row_text = f"{icon} {clean_display}" if icon else f"• {clean_display}"
+                
+                row.append(InlineKeyboardButton(row_text, callback_data=f"jobtype_{key}"))
             if row:
                 keyboard.append(row)
+        
+        # Add Done button if there are selections
+        if selected_types:
+            keyboard.append([InlineKeyboardButton("✅ Done / Continue", callback_data="jobtype_done")])
         
         return InlineKeyboardMarkup(keyboard)
     

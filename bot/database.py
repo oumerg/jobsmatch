@@ -2,7 +2,7 @@ import os
 import asyncpg
 import pymongo
 import sqlite3
-import aiosqlite
+# import aiosqlite
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime
@@ -71,8 +71,91 @@ class DatabaseManager:
                 total_earnings REAL DEFAULT 0.00,
                 available_balance REAL DEFAULT 0.00,
                 referred_by INTEGER,
+                telegram_id INTEGER UNIQUE,
+                full_name TEXT,
+                email TEXT,
+                role TEXT DEFAULT 'seeker',
+                language TEXT DEFAULT 'am',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        await self.connection.execute('''
+            CREATE TABLE IF NOT EXISTS job_posts (
+                post_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_message_id INTEGER UNIQUE,
+                telegram_channel TEXT,
+                post_link TEXT,
+                title TEXT,
+                company_name TEXT,
+                location TEXT,
+                posted_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_active BOOLEAN DEFAULT 1
+            )
+        ''')
+
+        await self.connection.execute('''
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                user_id INTEGER PRIMARY KEY,
+                preferred_job_types TEXT, -- Stored as comma-separated string or JSON
+                preferred_locations TEXT,
+                preferred_categories TEXT,
+                min_salary INTEGER,
+                max_experience INTEGER,
+                education_level TEXT,
+                keywords TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        await self.connection.execute('''
+            CREATE TABLE IF NOT EXISTS monitor_channels (
+                channel_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_username TEXT UNIQUE NOT NULL,
+                channel_title TEXT,
+                channel_type TEXT DEFAULT 'channel',
+                telegram_id INTEGER,
+                is_active BOOLEAN DEFAULT 1,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_checked TIMESTAMP,
+                total_messages_scraped INTEGER DEFAULT 0,
+                total_jobs_found INTEGER DEFAULT 0,
+                notes TEXT
+            )
+        ''')
+        
+        await self.connection.execute('''
+            CREATE TABLE IF NOT EXISTS monitor_groups (
+                group_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_username TEXT UNIQUE,
+                group_title TEXT,
+                group_type TEXT DEFAULT 'public',
+                telegram_id INTEGER,
+                is_active BOOLEAN DEFAULT 1,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_checked TIMESTAMP,
+                total_messages_scraped INTEGER DEFAULT 0,
+                total_jobs_found INTEGER DEFAULT 0,
+                invite_link TEXT,
+                notes TEXT
+            )
+        ''')
+        
+        await self.connection.execute('''
+             CREATE TABLE IF NOT EXISTS subscriptions (
+                subscription_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER UNIQUE NOT NULL,
+                status TEXT DEFAULT 'trial',
+                start_date DATE NOT NULL,
+                end_date DATE NOT NULL,
+                payment_method TEXT,
+                transaction_ref TEXT,
+                amount_birr REAL DEFAULT 50.00,
+                renewal_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
             )
         ''')
     
@@ -238,16 +321,14 @@ class DatabaseManager:
         """Add a new channel to monitor"""
         try:
             if self.db_type == 'postgresql':
-                await self.connection.execute('''
-                    INSERT INTO monitor_channels (channel_username, channel_title, channel_type, notes, telegram_id)
-                    VALUES ($1, $2, $3, $4, $5)
-                    ON CONFLICT (channel_username) DO UPDATE SET
-                        channel_title = EXCLUDED.channel_title,
-                        channel_type = EXCLUDED.channel_type,
-                        notes = EXCLUDED.notes,
-                        telegram_id = EXCLUDED.telegram_id,
-                        is_active = TRUE
-                ''', username, title, channel_type, notes, telegram_id)
+                # First try to insert, if conflict then update
+                try:
+                    query = "INSERT INTO monitor_channels (channel_username, channel_title, channel_type, notes, telegram_id) VALUES ($1, $2, $3, $4, $5)"
+                    await self.connection.execute(query, username, title, channel_type, notes, telegram_id)
+                except Exception:
+                    # If conflict, update existing record
+                    query = "UPDATE monitor_channels SET channel_title = $1, channel_type = $2, notes = $3, telegram_id = $4, is_active = TRUE WHERE channel_username = $5"
+                    await self.connection.execute(query, title, channel_type, notes, telegram_id, username)
             else:
                 await self.connection.execute('''
                     INSERT OR REPLACE INTO monitor_channels 

@@ -7,7 +7,7 @@ import logging
 import asyncio
 import json
 from typing import List, Dict, Any, Optional
-import google.generativeai as genai
+import google.genai as genai
 from bot.config import Config
 
 logger = logging.getLogger(__name__)
@@ -30,8 +30,11 @@ class GeminiJobMatcher:
                 return False
                 
             # Configure Gemini API
-            genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel(self.model_name)
+            import google.genai as genai
+            self.client = genai.Client(api_key=self.api_key)
+            
+            # Verify we can access the model (optional check)
+            # self.model object is not needed with the new client SDK as we call client.models.generate_content directly
             
             logger.info(f"✅ Gemini AI initialized with model: {self.model_name}")
             return True
@@ -58,9 +61,10 @@ class GeminiJobMatcher:
             
             # Get AI response with timeout
             response = await asyncio.wait_for(
-                self.model.generate_content(
-                    prompt,
-                    generation_config=genai.types.GenerationConfig(
+                self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=genai.GenerateContentConfig(
                         temperature=self.temperature,
                         max_output_tokens=self.max_tokens
                     )

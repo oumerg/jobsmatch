@@ -16,7 +16,6 @@ preference_collectors = {}
 
 async def handle_preference_response(update: Update, user, message_text: str):
     """Handle preference responses for registered users"""
-    logger.info(f"Handling preference response for user {user.id}: '{message_text}'")
     
     # Get or create preference collector for this user
     if user.id not in preference_collectors:
@@ -33,10 +32,8 @@ async def handle_preference_response(update: Update, user, message_text: str):
             await collector.manager.db.connect()
         elif hasattr(collector.manager.db.connection, 'is_closed'):
             if callable(collector.manager.db.connection.is_closed) and collector.manager.db.connection.is_closed():
-                logger.warning(f"Reconnecting database for user {user.id}")
                 await collector.manager.db.connect()
     except Exception as e:
-        logger.warning(f"Connection check failed, reconnecting: {e}")
         await collector.manager.db.connect()
     
     try:
@@ -61,7 +58,6 @@ async def handle_preference_response(update: Update, user, message_text: str):
             # Handle as category selection
             category = preference_mapping[message_text]
             response = await collector.handle_category_selection(user.id, category)
-            logger.info(f"Processed category selection: {category}")
             
             # Get next keyboard - always use inline keyboard
             from bot.utils.preference_utils import get_preference_keyboard
@@ -89,11 +85,9 @@ async def handle_preference_response(update: Update, user, message_text: str):
         response = await collector.handle_preference_response(user.id, message_text)
         
         if response:
-            logger.info(f"Preference response: '{response}'")
             # Get appropriate keyboard based on current step
             state = collector.user_states.get(user.id, {})
             step = state.get('step', 'categories')
-            logger.info(f"Current preference step: {step}")
             
             from bot.utils.preference_utils import get_preference_keyboard
             keyboard_list, inline_keyboard = get_preference_keyboard(collector, user.id)
@@ -126,7 +120,6 @@ async def handle_preference_response(update: Update, user, message_text: str):
             )
             
     except Exception as e:
-        logger.error(f"Error in preference response: {e}")
         await update.message.reply_text("❌ Error updating preferences. Please try again.")
     # Don't close the connection here - keep it open for the preference collection flow
     # Connection will be closed when preference collection is complete or cancelled
@@ -136,7 +129,6 @@ async def handle_preference_callback(update: Update, context: ContextTypes.DEFAU
     query = update.callback_query
     user = update.effective_user
 
-    logger.info(f"Preference callback from user {user.id}: {callback_data}")
 
     db = DatabaseManager()
     await db.connect()
@@ -253,7 +245,6 @@ async def handle_preference_callback(update: Update, context: ContextTypes.DEFAU
                 try:
                     await query.edit_message_text(response, reply_markup=None)
                 except Exception as e:
-                    logger.warning(f"Could not edit message: {e}")
                     await query.message.reply_text(response)
             else:
                 # Add navigation buttons to inline keyboard - convert tuple to list first
@@ -280,7 +271,6 @@ async def handle_preference_callback(update: Update, context: ContextTypes.DEFAU
                         # Message unchanged, just acknowledge
                         await query.answer("Already selected!")
                 except Exception as e:
-                    logger.warning(f"Could not edit message, sending new one: {e}")
                     await query.message.reply_text(response, reply_markup=inline_keyboard)
         else:
             # If no keyboard, check if preference collection is complete
@@ -289,17 +279,14 @@ async def handle_preference_callback(update: Update, context: ContextTypes.DEFAU
                 try:
                     await query.edit_message_text(response, reply_markup=None)
                 except Exception as e:
-                    logger.warning(f"Could not edit message: {e}")
                     await query.message.reply_text(response)
             else:
                 try:
                     await query.edit_message_text(response)
                 except Exception as e:
-                    logger.warning(f"Could not edit message: {e}")
                     await query.message.reply_text(response)
 
     except Exception as e:
-        logger.error(f"Error handling preference callback: {e}")
         await query.edit_message_text("❌ Error processing preference selection.")
     finally:
         await db.close()

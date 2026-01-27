@@ -271,11 +271,17 @@ class PreferenceCollector:
         self.manager = PreferenceManager(db_manager)
         self.user_states = {}  # Track user progress
     
+    
     def start_preference_collection(self, user_id: int) -> str:
         """Start collecting user preferences"""
+        # Initialize state with empty selections lists
         self.user_states[user_id] = {
             'step': 'categories',
-            'data': {}
+            'data': {
+                'selected_categories': [],
+                'selected_locations': [],
+                'selected_job_types': []
+            }
         }
         return self.manager.format_categories_message()
     
@@ -286,10 +292,11 @@ class PreferenceCollector:
             logger.warning(f"User {user_id} not found in user_states, reinitializing")
             self.user_states[user_id] = {
                 'step': 'categories',
-                'data': {}
+                'data': {'selected_categories': [], 'selected_locations': [], 'selected_job_types': []}
             }
         
         state = self.user_states[user_id]
+        current_selections = state['data'].get('selected_categories', [])
         
         if "cancel" in response.lower():
             del self.user_states[user_id]
@@ -301,13 +308,41 @@ class PreferenceCollector:
                 logger.warning(f"Error closing database connection on cancel: {e}")
             return "Preference collection cancelled."
         
-        # Save category preference
-        success = await self.manager.save_preference_field(user_id, 'preferred_categories', [response])
-        if success:
-            state['step'] = 'education'
-            return self.manager.format_education_message()
+        # specific handling for "Done"
+        if response == "category_done" or response.lower() == "done":
+            if not current_selections:
+                return "⚠️ Please select at least one category before proceeding."
+            
+            # Save all selected categories
+            success = await self.manager.save_preference_field(user_id, 'preferred_categories', current_selections)
+            if success:
+                state['step'] = 'education'
+                return self.manager.format_education_message()
+            else:
+                return "❌ Error saving category preferences. Please try again."
+
+        # Handle "All Categories" toggle
+        if response == "category_all":
+            all_categories = list(self.manager.categories_manager.job_categories.keys())
+            if len(current_selections) == len(all_categories):
+                # If all selected, deselect all
+                state['data']['selected_categories'] = []
+            else:
+                # Select all
+                state['data']['selected_categories'] = all_categories
+            return self.manager.format_categories_message()
+
+        # Handle individual toggles
+        category = response.replace("category_", "")
+        if category in current_selections:
+            current_selections.remove(category)
         else:
-            return "❌ Error saving category preference. Please try again."
+            current_selections.append(category)
+        
+        state['data']['selected_categories'] = current_selections
+        
+        # Return the same message to refresh keyboard with new state
+        return self.manager.format_categories_message()
     
     async def handle_education_selection(self, user_id: int, response: str) -> str:
         """Handle education level selection"""
@@ -384,10 +419,11 @@ class PreferenceCollector:
             logger.warning(f"User {user_id} not found in user_states, reinitializing")
             self.user_states[user_id] = {
                 'step': 'locations',
-                'data': {}
+                'data': {'selected_categories': [], 'selected_locations': [], 'selected_job_types': []}
             }
         
         state = self.user_states[user_id]
+        current_selections = state['data'].get('selected_locations', [])
         
         if "cancel" in response.lower():
             del self.user_states[user_id]
@@ -402,13 +438,44 @@ class PreferenceCollector:
             state['step'] = 'education'
             return self.manager.format_education_message()
         
-        # Save location preference
-        success = await self.manager.save_preference_field(user_id, 'preferred_locations', [response])
-        if success:
-            state['step'] = 'job_types'
-            return self.manager.format_job_types_message()
+        # specific handling for "Done"
+        if response == "location_done" or response.lower() == "done":
+            if not current_selections:
+                return "⚠️ Please select at least one location before proceeding."
+            
+            # Save selections
+            success = await self.manager.save_preference_field(user_id, 'preferred_locations', current_selections)
+            if success:
+                state['step'] = 'job_types'
+                return self.manager.format_job_types_message()
+            else:
+                return "❌ Error saving location preferences. Please try again."
+
+        # Handle "Any Location" / "All"
+        location = response.replace("location_", "")
+        
+        if location == "any":
+            if "Any Location" in current_selections:
+                current_selections.remove("Any Location")
+            else:
+                # If Any is selected, maybe clear others? Or just add it.
+                # User asked for "inclusive". Let's just add it.
+                current_selections.append("Any Location")
+        elif location == "remote":
+             if "Remote" in current_selections:
+                 current_selections.remove("Remote")
+             else:
+                 current_selections.append("Remote")
         else:
-            return "❌ Error saving location preference. Please try again."
+             if location in current_selections:
+                 current_selections.remove(location)
+             else:
+                 current_selections.append(location)
+        
+        state['data']['selected_locations'] = current_selections
+        
+        # Return same message to refresh keyboard
+        return self.manager.format_locations_message()
     
     async def handle_job_type_selection(self, user_id: int, response: str) -> str:
         """Handle job type selection"""
@@ -417,10 +484,11 @@ class PreferenceCollector:
             logger.warning(f"User {user_id} not found in user_states, reinitializing")
             self.user_states[user_id] = {
                 'step': 'job_types',
-                'data': {}
+                'data': {'selected_categories': [], 'selected_locations': [], 'selected_job_types': []}
             }
         
         state = self.user_states[user_id]
+        current_selections = state['data'].get('selected_job_types', [])
         
         if "cancel" in response.lower():
             del self.user_states[user_id]
@@ -435,45 +503,43 @@ class PreferenceCollector:
             state['step'] = 'locations'
             return self.manager.format_locations_message()
         
-        # Extract job type from response
-        original_response = response
-        job_type = response.replace(" ", "").replace(" ", "").replace(" ", "").replace(" ", "").replace(" ", "").replace("• ", "").lower().strip()
-        logger.info(f"Original response: '{original_response}'")
-        logger.info(f"Cleaned job type: '{job_type}'")
-        logger.info(f"Job type mapping keys: {list(self.manager.get_job_type_mapping().keys())}")
+        # specific handling for "Done"
+        if response == "jobtype_done" or response.lower() == "done":
+            if not current_selections:
+                return "⚠️ Please select at least one job type before proceeding."
+            
+            # Save selections
+            success = await self.manager.save_preference_field(user_id, 'preferred_job_types', current_selections)
+            logger.info(f"Save job types result: {success}")
+            if success:
+                state['step'] = 'salary'
+                return self.manager.format_salary_message()
+            else:
+                logger.error(f"Failed to save job type for user {user_id}")
+                return "❌ Error saving job type preferences. Please try again."
+
+        # Handle "All Job Types"
+        if response == "jobtype_all":
+            all_types = list(self.manager.job_types_manager.job_types_display.keys())
+            if len(current_selections) == len(all_types):
+                state['data']['selected_job_types'] = []
+            else:
+                state['data']['selected_job_types'] = all_types
+            return self.manager.format_job_types_message()
+            
+        # Extract job type
+        job_type = response.replace("jobtype_", "")
         
-        # Also try to match with common variations
-        variations = [
-            job_type,
-            job_type.replace(" ", ""),  # "fulltime"
-            job_type.replace(" ", "_"),  # "full_time"
-        ]
+        # Original logic was complex because of text input, but with inline buttons we primarily get callbacks
+        # If it's a direct text input (fallback), we might need the mapping logic, but let's assume callback for multi-select flow
         
-        # Map display names to internal values
-        job_type_mapping = self.manager.get_job_type_mapping()
-        
-        # Check if any variation matches
-        matched = False
-        for variation in variations:
-            if variation in job_type_mapping:
-                mapped_type = job_type_mapping[variation]
-                logger.info(f"Job type matched: '{variation}' -> '{mapped_type}'")
-                matched = True
-                # Save job type incrementally
-                success = await self.manager.save_preference_field(user_id, 'preferred_job_types', [mapped_type])
-                logger.info(f"Save result: {success}")
-                if success:
-                    state['step'] = 'salary'
-                    logger.info(f"State before advancement: {state}")
-                    logger.info(f"Advanced to salary step for user {user_id}")
-                    return self.manager.format_salary_message()
-                else:
-                    logger.error(f"Failed to save job type for user {user_id}")
-                    return "❌ Error saving job type preference. Please try again."
-        
-        if not matched:
-            logger.warning(f"Job type not matched: '{job_type}' (tried variations: {variations})")
-            return "Please select a valid job type from the options above."
+        if job_type in current_selections:
+            current_selections.remove(job_type)
+        else:
+            current_selections.append(job_type)
+            
+        state['data']['selected_job_types'] = current_selections
+        return self.manager.format_job_types_message()
     
     async def handle_salary_selection(self, user_id: int, response: str) -> str:
         """Handle salary selection"""

@@ -39,7 +39,10 @@ async def main():
         return
     
     # Create application instance
-    application = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).build()
+    import pytz
+    from telegram.ext import Defaults
+    defaults = Defaults(tzinfo=pytz.utc)
+    application = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).defaults(defaults).build()
     
     # Set the global bot instance for scraper access
     set_bot_instance(application.bot)

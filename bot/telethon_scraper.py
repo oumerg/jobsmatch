@@ -102,12 +102,25 @@ class JobScraper:
                 logger.debug(f"🔄 Already processed message {message_id}")
                 return
             
-            # Skip messages from the bot itself
-            if message.out or getattr(message, 'from_id', None) == self.client.get_me().id:
-                return
+            # Skip messages from the bot itself (unless it looks like a job posting for testing)
+            # We allow it for now to enable testing with own account
+            try:
+                me = await self.client.get_me()
+                from_id = getattr(message, 'from_id', None)
+                if message.out or from_id == me.id:
+                    # Check if it looks like a job before skipping completely
+                    if not self.is_job_posting(message.text):
+                         logger.debug(f"ℹ️ Skipping own message (not a job)")
+                         return
+                    logger.info(f"ℹ️ Processing own message (detected as job)")
+            except Exception as e:
+                logger.error(f"Error getting bot info: {e}")
+                # If we can't get bot info, don't filter out messages
+                pass
             
             # Skip messages that are too short
             if not message.text or len(message.text.strip()) < 50:
+                logger.debug(f"🚫 Skipping message - too short: {len(message.text.strip())} chars")
                 return
             
             # Create content hash to detect duplicate content
@@ -123,35 +136,31 @@ class JobScraper:
             self.processed_messages.add(message_id)
             self.processed_content.add(content_hash)
             
-            # Process job with timeout to prevent getting stuck
-            try:
-                # Check if message contains job posting
-                if self.is_job_posting(message.text):
-                    logger.info(f"🔍 Job posting detected in {channel_name}")
+            # Check if message contains job posting
+            is_job = self.is_job_posting(message.text)
+            logger.info(f"🔍 Job posting check result: {is_job}")
+            
+            if is_job:
+                logger.info(f"🔍 Job posting detected in {channel_name}")
+                
+                # Add timeout for job extraction
+                job_data = await asyncio.wait_for(
+                    self.extract_job_data(message), 
+                    timeout=10.0  # 10 second timeout
+                )
+                
+                if job_data:
+                    logger.info(f"📋 Job extracted: {job_data['title']} at {job_data.get('company_name', 'Unknown')}")
                     
-                    # Add timeout for job extraction
-                    job_data = await asyncio.wait_for(
-                        self.extract_job_data(message), 
-                        timeout=10.0  # 10 second timeout
+                    # Add timeout for job processing
+                    await asyncio.wait_for(
+                        self.process_and_forward_job(job_data),
+                        timeout=30.0  # 30 second timeout
                     )
-                    
-                    if job_data:
-                        logger.info(f"📋 Job extracted: {job_data['title']} at {job_data.get('company_name', 'Unknown')}")
-                        
-                        # Add timeout for job processing
-                        await asyncio.wait_for(
-                            self.process_and_forward_job(job_data),
-                            timeout=30.0  # 30 second timeout
-                        )
-                    else:
-                        logger.warning(f"⚠️ Failed to extract job data from {channel_name}")
                 else:
-                    logger.debug(f"📄 Regular message (not job) from {channel_name}")
-                    
-            except asyncio.TimeoutError:
-                logger.error(f"⏰ Timeout processing message from {channel_name}")
-            except Exception as e:
-                logger.error(f"❌ Error processing message from {channel_name}: {e}")
+                    logger.warning(f"⚠️ Failed to extract job data from {channel_name}")
+            else:
+                logger.debug(f"📄 Regular message (not job) from {channel_name}")
             
             # Clear processed messages periodically to prevent memory issues
             if len(self.processed_messages) > 1000:
@@ -231,6 +240,11 @@ class JobScraper:
         if text.count('/') > 2:  # Too many commands
             logger.debug(f"🚫 Skipping message - too many commands: {text.count('/')}")
             return False
+        
+        # TEMPORARY: For testing, treat any message with "job title:" as a job posting
+        if 'job title:' in text_lower:
+            logger.info(f"✅ Found 'job title:' - treating as job posting")
+            return True
         
         # Check for job keywords with context
         job_keyword_found = False
@@ -507,7 +521,7 @@ class JobScraper:
         return cleaned
     
     async def process_and_forward_job(self, job_data: Dict[str, Any]):
-        """Process job and forward to ALL users - broadcast mode"""
+        """Process job and forward to MATCHING users (Inclusive)"""
         try:
             # Save minimal data to database
             post_id = await self.save_job_post_to_db(job_data)
@@ -517,26 +531,27 @@ class JobScraper:
             
             logger.info(f"✅ Saved job post to database: {job_data['title']} at {job_data.get('company_name', 'Unknown')} (Post ID: {post_id})")
             
-            # Get ALL bot users (not just job seekers)
-            users = await self.get_all_users()
+            # Get MATCHING users (using inclusive preferences)
+            users = await self.find_matching_users(job_data)
+            
             if not users:
-                logger.info("⚠️ No users found for job broadcasting")
+                logger.info("⚠️ No matching users found for job")
                 return
             
-            logger.info(f"📢 Broadcasting job to {len(users)} users")
+            logger.info(f"📢 Broadcasting job to {len(users)} matching users")
             
-            # Broadcast to ALL users
+            # Forward to matching users
             for user in users:
-                logger.info(f"📤 Broadcasting to user {user['user_id']} ({user['full_name'] or user['username']})")
-                await self.forward_job_to_user_json(user, job_data, post_id)
+                logger.info(f"📤 Forwarding to user {user['user_id']} ({user.get('full_name') or user.get('username')})")
+                await self.forward_job_to_user(user, job_data, post_id)
                 
         except Exception as e:
             logger.error(f"Error processing job: {e}")
-    
+
     async def get_all_users(self) -> List[Dict[str, Any]]:
         """Get all bot users for broadcasting"""
         try:
-            # Get all users from the database
+            # Get all users from the database who have a telegram_id
             query = """
                 SELECT user_id, full_name, username, telegram_id, role
                 FROM users
@@ -550,21 +565,12 @@ class JobScraper:
         except Exception as e:
             logger.error(f"Error getting all users: {e}")
             return []
-    
+
     async def save_job_post_to_db(self, job_data: Dict[str, Any]) -> Optional[int]:
-        """Save minimal job post data to database"""
+        """Save minimal job post data to database (DB Agnostic)"""
         try:
-            # Insert minimal data
-            query = """
-                INSERT INTO job_posts (
-                    telegram_message_id, telegram_channel, post_link, 
-                    title, company_name, location, posted_date
-                ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
-                RETURNING post_id
-            """
-            
-            result = await self.db.connection.fetchrow(
-                query,
+            # Prepare values
+            params = (
                 job_data.get('telegram_message_id'),
                 job_data.get('telegram_channel'),
                 job_data.get('application_link') or job_data.get('view_details'),
@@ -573,156 +579,143 @@ class JobScraper:
                 job_data.get('location')
             )
             
-            return result['post_id'] if result else None
-            
+            if self.db.db_type == 'postgresql':
+                query = """
+                    INSERT INTO job_posts (
+                        telegram_message_id, telegram_channel, post_link, 
+                        title, company_name, location, posted_date
+                    ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+                    RETURNING post_id
+                """
+                result = await self.db.connection.fetchrow(query, *params)
+                return result['post_id'] if result else None
+            else:
+                # SQLite
+                query = """
+                    INSERT INTO job_posts (
+                        telegram_message_id, telegram_channel, post_link, 
+                        title, company_name, location, posted_date
+                    ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """
+                cursor = await self.db.connection.execute(query, params)
+                await self.db.connection.commit()
+                return cursor.lastrowid
+                
         except Exception as e:
             logger.error(f"Error saving job post: {e}")
             return None
-    
-    async def forward_job_to_user_with_ai_json(self, match: Dict[str, Any], job_data: Dict[str, Any], post_id: int):
-        """Forward job to user with AI-generated recommendation using JSON format"""
-        try:
-            # Create JSON job data
-            job_json = {
-                'post_id': post_id,
-                'title': job_data['title'],
-                'company': job_data.get('company_name'),
-                'location': job_data.get('location'),
-                'job_type': job_data.get('job_type'),
-                'salary': job_data.get('salary_range'),
-                'deadline': job_data.get('deadline'),
-                'application_link': job_data.get('application_link'),
-                'view_details': job_data.get('view_details'),
-                'description': job_data['description'][:500] + '...' if len(job_data['description']) > 500 else job_data['description'],
-                'posted_date': job_data.get('posted_date'),
-                'source': job_data.get('telegram_channel'),
-                'ai_match_score': match['match_score'],
-                'ai_recommendation': match['recommendation'],
-                'ai_reason': match.get('match_reason', '')
-            }
-            
-            # Create message with JSON
-            message = self.format_json_job_message(job_json, match)
-            
-            # Send via bot
-            if hasattr(self, 'bot_instance') and self.bot_instance:
-                try:
-                    await self.bot_instance.send_message(
-                        chat_id=match['user_telegram_id'],
-                        text=message,
-                        parse_mode='Markdown'
-                    )
-                    logger.info(f"✅ AI-matched job sent to user {match['user_id']}: {job_data['title']} (Score: {match['match_score']:.2f})")
-                except Exception as e:
-                    logger.error(f"Error sending AI-matched job to user {match['user_id']}: {e}")
-            else:
-                logger.info(f"📤 Would send AI-matched job to user {match['user_id']} ({match['user_telegram_id']}): {job_data['title']}")
-                
-        except Exception as e:
-            logger.error(f"Error forwarding AI-matched job: {e}")
-    
-    async def forward_job_to_user_json(self, user: Dict[str, Any], job_data: Dict[str, Any], post_id: int):
-        """Forward job to user using JSON format"""
-        try:
-            # Create JSON job data
-            job_json = {
-                'post_id': post_id,
-                'title': job_data['title'],
-                'company': job_data.get('company_name'),
-                'location': job_data.get('location'),
-                'job_type': job_data.get('job_type'),
-                'salary': job_data.get('salary_range'),
-                'deadline': job_data.get('deadline'),
-                'application_link': job_data.get('application_link'),
-                'view_details': job_data.get('view_details'),
-                'description': job_data['description'][:500] + '...' if len(job_data['description']) > 500 else job_data['description'],
-                'posted_date': job_data.get('posted_date'),
-                'source': job_data.get('telegram_channel')
-            }
-            
-            # Create message with JSON
-            message = self.format_json_job_message(job_json)
-            
-            # Check if bot instance is available
-            if hasattr(self, 'bot_instance') and self.bot_instance:
-                logger.info(f"🤖 Bot instance available, sending to user {user['user_id']}")
-                try:
-                    await self.bot_instance.send_message(
-                        chat_id=user['telegram_id'],
-                        text=message,
-                        parse_mode='Markdown'
-                    )
-                    logger.info(f"✅ Job sent to user {user['user_id']}: {job_data['title']}")
-                except Exception as e:
-                    logger.error(f"❌ Error sending job to user {user['user_id']}: {e}")
-            else:
-                logger.warning(f"⚠️ No bot instance available - would send to user {user['user_id']} ({user['telegram_id']}): {job_data['title']}")
-                logger.info(f"💡 Bot instance status: {hasattr(self, 'bot_instance')}")
-                if hasattr(self, 'bot_instance'):
-                    logger.info(f"💡 Bot instance value: {self.bot_instance}")
-                
-        except Exception as e:
-            logger.error(f"❌ Error forwarding job: {e}")
-    
-    def format_json_job_message(self, job_json: Dict[str, Any], match: Dict[str, Any] = None) -> str:
-        """Format job message with JSON data - broadcast version"""
-        message = f"*🔔 NEW JOB ALERT*\n\n"
-        message += f"*{job_json['title']}*\n"
-        
-        if job_json.get('company'):
-            message += f"🏢 *Company:* {job_json['company']}\n"
-        
-        if job_json.get('location'):
-            message += f"📍 *Location:* {job_json['location']}\n"
-        
-        if job_json.get('job_type'):
-            message += f"💼 *Type:* {job_json['job_type'].title()}\n"
-        
-        if job_json.get('salary'):
-            message += f"💰 *Salary:* {job_json['salary']}\n"
-        
-        if job_json.get('deadline'):
-            message += f"⏰ *Deadline:* {job_json['deadline']}\n"
-        
-        message += f"\n📋 *Description:*\n{job_json['description']}\n"
-        
-        # Add application link if available
-        if job_json.get('application_link'):
-            message += f"\n🔗 *Apply Here:* {job_json['application_link']}\n"
-        elif job_json.get('view_details'):
-            message += f"\n📄 *Details:* {job_json['view_details']}\n"
-        
-        message += f"\n🆔 *Post ID:* {job_json['post_id']}\n"
-        message += f"📅 *Posted:* {job_json.get('posted_date', 'Today')}\n"
-        message += f"🔗 *Source:* {job_json.get('source', 'Telegram Channel')}\n\n"
-        
-        # Add JSON data for developers/apps
-        message += f"```json\n{json.dumps(job_json, indent=2, ensure_ascii=False)}\n```\n\n"
-        
-        message += f"🇪🇹 *New opportunity available!*\n\n"
-        
-        if job_json.get('application_link'):
-            message += f"💡 *Interested?* Click the link above to apply"
-        else:
-            message += f"💡 *Interested?* Use `/apply {job_json['post_id']}` to apply"
-        
-        return message
-    
+
     async def find_matching_users(self, job_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Find users who match this job"""
+        """Find users who match this job based on preferences (Keywords, Location, Job Type) - INCLUSIVE"""
         try:
-            # Get all active job seekers with subscriptions
+            job_title = job_data.get('title', '').lower()
+            job_desc = job_data.get('description', '').lower()
+            job_location = job_data.get('location', '').lower() if job_data.get('location') else ''
+            job_type = job_data.get('job_type', '').lower() if job_data.get('job_type') else ''
+            
+            # We need to fetch users and their preferences.
             query = """
-                SELECT DISTINCT u.user_id, u.full_name, u.telegram_id, u.username
+                SELECT u.user_id, u.full_name, u.telegram_id, u.username, 
+                       up.keywords, up.preferred_locations, up.preferred_job_types, up.preferred_categories
                 FROM users u
-                JOIN subscriptions s ON u.user_id = s.user_id
-                WHERE s.status = 'active' 
-                AND s.end_date >= CURRENT_DATE
-                AND u.role = 'seeker'
+                LEFT JOIN user_preferences up ON u.user_id = up.user_id
+                WHERE u.telegram_id IS NOT NULL
             """
             
             users = await self.db.execute_query(query)
-            return users if users else []
+            if not users:
+                return []
+                
+            matched_users = []
+            
+            for user in users:
+                score = 0
+                is_match = False
+                
+                # Helper to parse list-like strings from DB (simple parsing)
+                def parse_pref_list(pref_value):
+                    if not pref_value:
+                        return []
+                    if isinstance(pref_value, list):
+                        return [str(p).lower().strip() for p in pref_value]
+                    if isinstance(pref_value, str):
+                        # Handle potential Python list string representation or comma separated
+                        cleaned = pref_value.replace('[', '').replace(']', '').replace("'", "").replace('"', "")
+                        return [p.strip().lower() for p in cleaned.split(',') if p.strip()]
+                    return []
+
+                # Parse preferences
+                user_locs = parse_pref_list(user.get('preferred_locations'))
+                user_types = parse_pref_list(user.get('preferred_job_types'))
+                user_cats = parse_pref_list(user.get('preferred_categories'))
+                
+                # 1. No preferences set? -> Match everything (Broadcast behavior if user hasn't set prefs)
+                if not user_locs and not user_types and not user_cats:
+                    is_match = True
+                    score += 1
+                else:
+                    # 2. Location Match (Inclusive OR)
+                    # If user has "Remote" or "Any Location", they match "Remote" or any location respectively
+                    location_match = False
+                    if not user_locs or 'any' in user_locs or 'any location' in user_locs:
+                        location_match = True
+                    elif job_location:
+                        if 'remote' in user_locs and ('remote' in job_location or 'work from home' in job_location):
+                             location_match = True
+                        else:
+                            for loc in user_locs:
+                                if loc in job_location or job_location in loc:
+                                    location_match = True
+                                    break
+                    
+                    if location_match:
+                        score += 2
+                    
+                    # 3. Job Type Match (Inclusive OR)
+                    type_match = False
+                    if not user_types or 'all' in user_types or 'all job types' in user_types:
+                        type_match = True
+                    elif job_type:
+                         for ut in user_types:
+                             if ut in job_type or job_type in ut:
+                                 type_match = True
+                                 break
+                    
+                    if type_match:
+                        score += 1
+                    
+                    # 4. Keyword/Category Match (Inclusive OR)
+                    # Since we don't have job category extraction yet, rely on title/desc keywords
+                    keyword_match = False
+                    # Use categories as keywords
+                    combined_keywords = user_cats
+                    if user.get('keywords'):
+                        combined_keywords.extend(parse_pref_list(user.get('keywords')))
+                    
+                    if not combined_keywords:
+                        keyword_match = True # lenient if no keywords/categories
+                    else:
+                        for kw in combined_keywords:
+                            if kw in job_title or kw in job_desc:
+                                keyword_match = True
+                                break
+                    
+                    if keyword_match:
+                        score += 2
+
+                    # Final Decision: inclusive matching
+                    # If ANY criteria matched strongly, or if location matched and others didn't conflict
+                    if location_match or type_match or keyword_match:
+                        is_match = True
+                
+                if is_match:
+                    user['match_score'] = score
+                    matched_users.append(user)
+            
+            # Sort by score
+            matched_users.sort(key=lambda x: x['match_score'], reverse=True)
+            
+            return matched_users
             
         except Exception as e:
             logger.error(f"Error finding matching users: {e}")
@@ -873,7 +866,8 @@ class JobScraper:
         """Add a new channel/group to monitor"""
         try:
             # Clean username - remove @ if present for database storage
-            clean_username = channel_username.lstrip('@')
+            # Handle if channel_username is an int
+            clean_username = str(channel_username).lstrip('@')
             
             # Try different ways to get the entity
             entity = None

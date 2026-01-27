@@ -42,6 +42,50 @@ async def migrate_database():
             await conn.execute(constraint_sql)
             print("✅ Added new payment_method constraint with trial options")
             
+        except Exception as e:
+            if "already exists" in str(e).lower() or "does not exist" in str(e).lower():
+                print("⏭️ Subscription constraint already handled")
+            else:
+                print(f"⚠️ Subscription constraint error: {e}")
+        
+        # Fix job_posts title length
+        print("🔧 Checking job_posts table...")
+        try:
+            await conn.execute("ALTER TABLE job_posts ALTER COLUMN title TYPE TEXT")
+            print("✅ Changed job_posts title to TEXT (unlimited length)")
+        except Exception as e:
+            if "already exists" in str(e).lower() or "type" in str(e).lower():
+                print("⏭️ Job posts title already updated")
+            else:
+                print(f"⚠️ Job posts title error: {e}")
+        
+        try:
+            await conn.execute("ALTER TABLE job_posts ALTER COLUMN company_name TYPE TEXT")
+            print("✅ Changed job_posts company_name to TEXT (unlimited length)")
+        except Exception as e:
+            if "already exists" in str(e).lower() or "type" in str(e).lower():
+                print("⏭️ Job posts company_name already updated")
+            else:
+                print(f"⚠️ Job posts company_name error: {e}")
+        
+        try:
+            await conn.execute("ALTER TABLE job_posts ALTER COLUMN location TYPE TEXT")
+            print("✅ Changed job_posts location to TEXT (unlimited length)")
+        except Exception as e:
+            if "already exists" in str(e).lower() or "type" in str(e).lower():
+                print("⏭️ Job posts location already updated")
+            else:
+                print(f"⚠️ Job posts location error: {e}")
+                
+        try:
+            await conn.execute("ALTER TABLE job_posts ALTER COLUMN telegram_channel TYPE TEXT")
+            print("✅ Changed job_posts telegram_channel to TEXT (unlimited length)")
+        except Exception as e:
+            if "already exists" in str(e).lower() or "type" in str(e).lower():
+                print("⏭️ Job posts telegram_channel already updated")
+            else:
+                print(f"⚠️ Job posts telegram_channel error: {e}")
+            
             # Add unique constraint on user_id if not exists
             try:
                 await conn.execute("ALTER TABLE subscriptions ADD CONSTRAINT subscriptions_user_id_unique UNIQUE (user_id)")
@@ -243,11 +287,11 @@ async def migrate_database():
                 CREATE TABLE IF NOT EXISTS job_posts (
                     post_id BIGSERIAL PRIMARY KEY,
                     telegram_message_id BIGINT UNIQUE,
-                    telegram_channel VARCHAR(200),
+                    telegram_channel TEXT,
                     post_link TEXT,
-                    title VARCHAR(200),
-                    company_name VARCHAR(200),
-                    location VARCHAR(100),
+                    title TEXT,
+                    company_name TEXT,
+                    location TEXT,
                     posted_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     is_active BOOLEAN DEFAULT TRUE
                 )

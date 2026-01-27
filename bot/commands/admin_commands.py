@@ -445,7 +445,7 @@ async def admin_payments_command(update: Update, context: ContextTypes.DEFAULT_T
             ORDER BY submitted_at DESC
         """
         
-        payments = await db.connection.fetch(query)
+        payments = await db.execute_query(query)
         
         if not payments:
             await update.message.reply_text("✅ No pending payments to review.")
