@@ -52,7 +52,6 @@ async def run_bot():
     """Run the main Telegram bot"""
     try:
         from bot.main import main as bot_main
-        global bot_instance
         
         # Start bot - this will set the bot instance globally
         await bot_main()
